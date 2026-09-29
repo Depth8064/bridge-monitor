@@ -44,6 +44,13 @@ header {
     flex-wrap: wrap;
 }
 
+.brand-logo {
+    display: block;
+    width: 32px;
+    height: 32px;
+    flex: none;
+}
+
 h1 {
     font-size: 18px;
     margin: 0;
