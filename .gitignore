@@ -2,5 +2,5 @@
 /data/
 /dist/
 /bridge-monitor
-/bridge-monitor.exe
+/bridge-monitor.exe*
 *.exe
