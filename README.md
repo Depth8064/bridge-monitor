@@ -25,8 +25,9 @@ Open http://127.0.0.1:8080. Set `"listen": ":8080"` to view it from other machin
 | `interval` / `timeout` | Probe cadence and per-probe timeout (rounds may overlap) |
 | `outage_threshold` | Consecutive lost probes that count as an outage |
 | `spike_ms` | Replies slower than this are counted as latency spikes |
-| `retention` | How much history is kept in memory / reloaded on restart |
+| `retention` | How much history the live engine keeps in memory (refilled from the database on restart) |
 | `internet_side` | `local` (default) if this host reaches the internet without crossing the bridge, `remote` if the uplink is on the far side |
+| `storage.raw` / `minute` / `hour` / `day` | Retention per storage tier (`"7d"`, `"30d"`, `"365d"`, `"0"` = forever) |
 | `targets[].role` | `local`, `remote` (across the bridge) or `internet` (control) |
 | `targets[].type` | `icmp` (`host`) or `tcp` (`host:port`) |
 
@@ -46,6 +47,15 @@ To run it on both sides, give each instance its own config and flip `internet_si
 
 ## Data
 
-- `data/samples-YYYY-MM-DD.csv`: every probe (time, target, ok, rtt, error)
-- `data/outages.csv`: every completed outage
-- Dashboard **Download CSV**: outages for the selected window
+Everything is stored in `data/bridge-monitor.db` (SQLite, pure Go, no CGO):
+
+- raw probes, rolled up every minute into 1-minute, 1-hour and 1-day tiers. Each rollup keeps
+  counts, min/avg/max, jitter, loss bursts, bridge-verdict counts and a latency histogram, so
+  percentiles stay accurate at every tier
+- each tier is pruned by its own retention, never before the next tier has absorbed it
+- outages (per target and derived bridge outages) are kept indefinitely
+
+Windows up to `retention` come from memory; longer ones (7d, 30d, 1y, All) are served from
+the tiers. CSV files from older versions are imported once on first start.
+
+Dashboard downloads: **Outages CSV** and **Raw samples CSV** for the selected window.

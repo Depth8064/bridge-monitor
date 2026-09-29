@@ -8,6 +8,12 @@
     "data_dir": "data",
     "icmp_privileged": false,
     "internet_side": "local",
+    "storage": {
+        "raw": "7d",
+        "minute": "30d",
+        "hour": "365d",
+        "day": "0"
+    },
     "targets": [
         {
             "name": "Local radio",

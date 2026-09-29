@@ -101,6 +101,7 @@ async function refresh() {
         ui.data = state;
         ui.series = series;
         state.targets.forEach((t, i) => ui.colors.set(t.name, t.color || PALETTE[i % PALETTE.length]));
+        ui.colors.set('Bridge', '#ef4444');
         $('live').className = 'live-dot on';
         render();
     } catch (err) {
@@ -130,6 +131,7 @@ function renderHeader() {
     const since = d.data_since && !d.data_since.startsWith('0001') ? ` \u00b7 data since ${fmtDateTime(d.data_since)}` : '';
     $('footer').textContent = `Monitor started ${fmtDateTime(d.started)}${since} \u00b7 updated ${fmtClock(Date.parse(d.now))}`;
     $('csv').href = `api/outages.csv?window=${ui.window}`;
+    $('samples-csv').href = `api/samples.csv?window=${ui.window}`;
 }
 
 function kpi(label, value, sub, cls) {
@@ -161,6 +163,7 @@ function topology(d) {
             local: 'local \u00b7 control',
             remote: 'far side',
             internet: remote ? 'internet \u00b7 via bridge' : 'internet \u00b7 control',
+            bridge: 'bridge fault',
         },
         note: remote
             ? 'The internet is reached through the bridge, so only the local site is a control. A bridge fault is ' +
@@ -557,7 +560,8 @@ function showTooltip(ev) {
     if (!se || i < 0) { tip.hidden = true; return; }
 
     const t0 = se.start + i * se.step;
-    tip.replaceChildren(el('div', 'tip-head', `${fmtClock(t0)} \u2013 ${fmtClock(t0 + se.step)}`));
+    const fmtT = se.step >= 3600e3 ? fmtDateTime : fmtClock;
+    tip.replaceChildren(el('div', 'tip-head', `${fmtT(t0)} \u2013 ${fmtT(t0 + se.step)}`));
     const tbl = el('table');
     const hr = el('tr');
     for (const h of ['', 'avg', 'max', 'loss']) hr.append(el('th', null, h));

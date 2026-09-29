@@ -9,11 +9,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Depth8064/bridge-monitor/internal/config"
 	"github.com/Depth8064/bridge-monitor/internal/monitor"
+	"github.com/Depth8064/bridge-monitor/internal/storage"
 	"github.com/Depth8064/bridge-monitor/internal/web"
 )
 
@@ -29,31 +32,46 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	store, err := monitor.OpenStore(cfg.DataDir, cfg.Targets)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	dbPath := filepath.Join(cfg.DataDir, "bridge-monitor.db")
+	db, err := storage.Open(dbPath, cfg)
 	if err != nil {
-		log.Fatalf("data dir: %v", err)
+		log.Fatalf("open %s: %v", dbPath, err)
 	}
-	defer store.Close()
+	defer db.Close()
+
+	if n, err := db.ImportCSV(ctx, cfg.DataDir); err != nil {
+		log.Printf("import csv: %v", err)
+	} else if n > 0 {
+		log.Printf("imported %d samples from CSV files in %s", n, cfg.DataDir)
+	}
 
 	eng := monitor.NewEngine(cfg)
-	n, err := monitor.Replay(cfg.DataDir, time.Now().Add(-cfg.Retention.Duration), eng.Record)
+	n, err := db.Replay(ctx, time.Now().Add(-cfg.Retention.Duration), eng.Record)
 	if err != nil {
 		log.Printf("replay history: %v", err)
 	}
-	log.Printf("loaded %d rounds of history from %s", n, cfg.DataDir)
+	log.Printf("loaded %d rounds of history from %s", n, dbPath)
 
 	eng.OnOutage = func(o monitor.Outage) {
 		log.Printf("OUTAGE %s (%s): %.1fs, %d probes lost, %s -> %s",
 			o.Target, o.Role, o.Duration, o.Lost, o.Start.Format(time.TimeOnly), o.End.Format(time.TimeOnly))
-		if err := store.WriteOutage(o); err != nil {
+		if err := db.WriteOutage(o); err != nil {
 			log.Printf("write outage: %v", err)
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	var bg sync.WaitGroup
+	bg.Add(1)
+	go func() {
+		defer bg.Done()
+		storage.NewDownsampler(db, cfg).Run(ctx)
+	}()
 
-	srv := &http.Server{Addr: cfg.Listen, Handler: web.Handler(eng), ReadHeaderTimeout: 5 * time.Second}
+	hist := storage.NewHistory(db, eng, cfg)
+	srv := &http.Server{Addr: cfg.Listen, Handler: web.Handler(eng, hist, db), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http: %v", err)
@@ -62,12 +80,13 @@ func main() {
 	log.Printf("dashboard: %s", dashboardURL(cfg.Listen))
 	log.Printf("probing %d targets every %s (timeout %s)", len(cfg.Targets), cfg.Interval, cfg.Timeout)
 
-	monitor.New(cfg, eng, store).Run(ctx)
+	monitor.New(cfg, eng, db).Run(ctx)
 
 	log.Print("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.Shutdown(shutdownCtx)
+	bg.Wait()
 }
 
 func dashboardURL(listen string) string {

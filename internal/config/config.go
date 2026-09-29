@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,13 +22,21 @@ const (
 	TypeTCP  = "tcp"
 )
 
-// Duration accepts Go duration strings like "1s" or "500ms" in JSON.
+// Duration accepts Go duration strings like "1s" or "500ms" in JSON, plus days like "30d".
 type Duration struct{ time.Duration }
 
 func (d *Duration) UnmarshalJSON(b []byte) error {
 	var s string
 	if err := json.Unmarshal(b, &s); err != nil {
-		return fmt.Errorf("duration must be a string like \"1s\": %w", err)
+		return fmt.Errorf("duration must be a string like \"1s\" or \"30d\": %w", err)
+	}
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		f, err := strconv.ParseFloat(days, 64)
+		if err != nil {
+			return fmt.Errorf("invalid duration %q", s)
+		}
+		d.Duration = time.Duration(f * float64(24*time.Hour))
+		return nil
 	}
 	v, err := time.ParseDuration(s)
 	if err != nil {
@@ -46,6 +56,14 @@ type Target struct {
 	Color string `json:"color,omitempty"`
 }
 
+// Storage retention per tier; 0 keeps a tier forever.
+type Storage struct {
+	Raw    Duration `json:"raw"`
+	Minute Duration `json:"minute"`
+	Hour   Duration `json:"hour"`
+	Day    Duration `json:"day"`
+}
+
 type Config struct {
 	Listen          string   `json:"listen"`
 	Interval        Duration `json:"interval"`
@@ -57,6 +75,7 @@ type Config struct {
 	ICMPPrivileged  bool     `json:"icmp_privileged"`
 	// InternetSide is which side of the bridge the internet uplink is on, relative to this host.
 	InternetSide string   `json:"internet_side"`
+	Storage      Storage  `json:"storage"`
 	Targets      []Target `json:"targets"`
 }
 
@@ -70,6 +89,11 @@ func Default() *Config {
 		Retention:       Duration{24 * time.Hour},
 		DataDir:         "data",
 		InternetSide:    RoleLocal,
+		Storage: Storage{
+			Raw:    Duration{7 * 24 * time.Hour},
+			Minute: Duration{30 * 24 * time.Hour},
+			Hour:   Duration{365 * 24 * time.Hour},
+		},
 	}
 }
 
@@ -107,6 +131,15 @@ func (c *Config) validate() error {
 	}
 	if c.InternetSide != RoleLocal && c.InternetSide != RoleRemote {
 		errs = append(errs, errors.New("internet_side must be local or remote"))
+	}
+	// Memory is refilled from raw samples on startup, so raw must cover it.
+	if c.Storage.Raw.Duration < c.Retention.Duration {
+		errs = append(errs, errors.New("storage.raw must be >= retention"))
+	}
+	for name, d := range map[string]time.Duration{"minute": c.Storage.Minute.Duration, "hour": c.Storage.Hour.Duration, "day": c.Storage.Day.Duration} {
+		if d < 0 {
+			errs = append(errs, fmt.Errorf("storage.%s must be >= 0", name))
+		}
 	}
 	if len(c.Targets) == 0 {
 		errs = append(errs, errors.New("at least one target is required"))

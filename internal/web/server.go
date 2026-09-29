@@ -10,13 +10,15 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Depth8064/bridge-monitor/internal/model"
 	"github.com/Depth8064/bridge-monitor/internal/monitor"
+	"github.com/Depth8064/bridge-monitor/internal/storage"
 )
 
 //go:embed static
 var static embed.FS
 
-func Handler(eng *monitor.Engine) http.Handler {
+func Handler(eng *monitor.Engine, hist *storage.History, db *storage.DB) http.Handler {
 	sub, err := fs.Sub(static, "static")
 	if err != nil {
 		panic(err)
@@ -24,25 +26,74 @@ func Handler(eng *monitor.Engine) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServerFS(sub))
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, eng.State(window(r)))
+		win := window(r)
+		if !hist.Handles(win) {
+			writeJSON(w, eng.State(win))
+			return
+		}
+		st, err := hist.State(r.Context(), win)
+		if err != nil {
+			serverError(w, "history state", err)
+			return
+		}
+		writeJSON(w, st)
 	})
 	mux.HandleFunc("GET /api/series", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, eng.Series(window(r), intParam(r, "buckets", 300, 10, 2000)))
+		win, buckets := window(r), intParam(r, "buckets", 300, 10, 2000)
+		if !hist.Handles(win) {
+			writeJSON(w, eng.Series(win, buckets))
+			return
+		}
+		se, err := hist.Series(r.Context(), win, buckets)
+		if err != nil {
+			serverError(w, "history series", err)
+			return
+		}
+		writeJSON(w, se)
 	})
 	mux.HandleFunc("GET /api/outages.csv", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="bridge-outages.csv"`)
-		cw := csv.NewWriter(w)
-		cw.Write([]string{"target", "role", "start", "end", "duration_s", "lost_probes", "ongoing"})
-		for _, o := range eng.Outages(window(r)) {
-			cw.Write([]string{
-				o.Target, o.Role, o.Start.Format(time.RFC3339), o.End.Format(time.RFC3339),
-				strconv.FormatFloat(o.Duration, 'f', 3, 64), strconv.Itoa(o.Lost), strconv.FormatBool(o.Ongoing),
-			})
+		win := window(r)
+		outs := eng.Outages(win)
+		if hist.Handles(win) {
+			var err error
+			if outs, err = hist.Outages(r.Context(), win); err != nil {
+				serverError(w, "history outages", err)
+				return
+			}
 		}
-		cw.Flush()
+		writeOutagesCSV(w, outs)
+	})
+	mux.HandleFunc("GET /api/samples.csv", func(w http.ResponseWriter, r *http.Request) {
+		var from time.Time
+		if win := window(r); win > 0 {
+			from = time.Now().Add(-win)
+		}
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="bridge-samples.csv"`)
+		if err := db.ExportSamples(r.Context(), w, from); err != nil {
+			log.Printf("export samples: %v", err)
+		}
 	})
 	return securityHeaders(mux)
+}
+
+func writeOutagesCSV(w http.ResponseWriter, outs []model.Outage) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="bridge-outages.csv"`)
+	cw := csv.NewWriter(w)
+	cw.Write([]string{"target", "role", "start", "end", "duration_s", "lost_probes", "ongoing"})
+	for _, o := range outs {
+		cw.Write([]string{
+			o.Target, o.Role, o.Start.Format(time.RFC3339), o.End.Format(time.RFC3339),
+			strconv.FormatFloat(o.Duration, 'f', 3, 64), strconv.Itoa(o.Lost), strconv.FormatBool(o.Ongoing),
+		})
+	}
+	cw.Flush()
+}
+
+func serverError(w http.ResponseWriter, what string, err error) {
+	log.Printf("%s: %v", what, err)
+	http.Error(w, "internal error", http.StatusInternalServerError)
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -77,7 +128,7 @@ func window(r *http.Request) time.Duration {
 	if n <= 0 {
 		return 0
 	}
-	return time.Duration(min(max(n, 10), 90*86400)) * time.Second
+	return time.Duration(min(max(n, 10), 10*365*86400)) * time.Second
 }
 
 func intParam(r *http.Request, name string, def, lo, hi int) int {

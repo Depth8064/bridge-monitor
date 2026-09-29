@@ -8,31 +8,20 @@ import (
 	"time"
 
 	"github.com/Depth8064/bridge-monitor/internal/config"
+	"github.com/Depth8064/bridge-monitor/internal/model"
 )
 
-type Sample struct {
-	Target string
-	OK     bool
-	RTT    time.Duration
-	Err    string
-}
-
-type Outage struct {
-	Target   string    `json:"target"`
-	Role     string    `json:"role"`
-	Start    time.Time `json:"start"`
-	End      time.Time `json:"end"`
-	Duration float64   `json:"duration_s"`
-	Lost     int       `json:"lost"`
-	Ongoing  bool      `json:"ongoing"`
-}
+type (
+	Sample = model.Sample
+	Outage = model.Outage
+)
 
 func newOutage(t config.Target, start, end int64, lost int, ongoing bool) Outage {
-	return Outage{
-		Target: t.Name, Role: t.Role,
-		Start: time.Unix(0, start), End: time.Unix(0, end),
-		Duration: float64(end-start) / 1e9, Lost: lost, Ongoing: ongoing,
-	}
+	return model.NewOutage(t.Name, t.Role, time.Unix(0, start), time.Unix(0, end), lost, ongoing)
+}
+
+func bridgeOutage(start, end int64, lost int, ongoing bool) Outage {
+	return model.NewOutage(model.BridgeTarget, model.RoleBridge, time.Unix(0, start), time.Unix(0, end), lost, ongoing)
 }
 
 type point struct {
@@ -93,47 +82,9 @@ func (s *tstate) closeRun(end int64, threshold int) (Outage, bool) {
 	return newOutage(s.cfg, s.runStart, end, n, false), true
 }
 
-// round holds per-role health for one probe round: -1 no targets, 0 any failed, 1 all ok.
 type round struct {
-	t                   int64
-	local, remote, inet int8
-}
-
-func (r *round) apply(role string, ok bool) {
-	var p *int8
-	switch role {
-	case config.RoleLocal:
-		p = &r.local
-	case config.RoleRemote:
-		p = &r.remote
-	case config.RoleInternet:
-		p = &r.inet
-	default:
-		return
-	}
-	if !ok {
-		*p = 0
-	} else if *p == -1 {
-		*p = 1
-	}
-}
-
-// farSide reports the health of the far side of the bridge: remote targets, or
-// internet targets when the uplink is across the bridge and no remote targets exist.
-func (r round) farSide(inetRemote bool) int8 {
-	if inetRemote && r.remote == -1 {
-		return r.inet
-	}
-	return r.remote
-}
-
-// bridgeFault: the far side failed while everything on this side of the bridge was healthy.
-// A local uplink is a control; a remote uplink sits behind the bridge so it can't be one.
-func (r round) bridgeFault(inetRemote bool) bool {
-	if r.farSide(inetRemote) != 0 || r.local == 0 {
-		return false
-	}
-	return inetRemote || r.inet != 0
+	t int64
+	model.Round
 }
 
 const maxOutageLog = 10000
@@ -149,6 +100,10 @@ type Engine struct {
 	rounds  []round
 	outages []Outage
 	version uint64
+
+	// bridge-fault run across rounds, so bridge outages can be emitted like target outages
+	bRun          int
+	bStart, bLast int64
 
 	cacheMu      sync.Mutex
 	cacheVersion uint64
@@ -174,7 +129,7 @@ func NewEngine(cfg *config.Config) *Engine {
 
 func (e *Engine) Record(t time.Time, samples []Sample) {
 	ts := t.UnixNano()
-	r := round{t: ts, local: -1, remote: -1, inet: -1}
+	r := round{t: ts, Round: model.NewRound()}
 	var closed []Outage
 	matched := false
 
@@ -188,10 +143,13 @@ func (e *Engine) Record(t time.Time, samples []Sample) {
 		if o, c := st.add(ts, s, e.cfg.OutageThreshold, e.gap); c {
 			closed = append(closed, o)
 		}
-		r.apply(st.cfg.Role, s.OK)
+		r.Apply(st.cfg.Role, s.OK)
 	}
 	if matched {
 		e.rounds = append(e.rounds, r)
+		if o, c := e.trackBridge(r); c {
+			closed = append(closed, o)
+		}
 	}
 	e.outages = append(e.outages, closed...)
 	if n := len(e.outages) - maxOutageLog; n > 0 {
@@ -207,6 +165,30 @@ func (e *Engine) Record(t time.Time, samples []Sample) {
 			cb(o)
 		}
 	}
+}
+
+func (e *Engine) trackBridge(r round) (Outage, bool) {
+	var out Outage
+	closed := false
+	end := func(at int64) {
+		if e.bRun >= e.cfg.OutageThreshold {
+			out, closed = bridgeOutage(e.bStart, at, e.bRun, false), true
+		}
+		e.bRun = 0
+	}
+	if e.bRun > 0 && r.t-e.bLast > e.gap {
+		end(e.bLast)
+	}
+	if r.BridgeFault(e.cfg.InternetIsRemote()) {
+		if e.bRun == 0 {
+			e.bStart = r.t
+		}
+		e.bRun++
+	} else if e.bRun > 0 {
+		end(r.t)
+	}
+	e.bLast = r.t
+	return out, closed
 }
 
 func (e *Engine) trim(cutoff int64) {
@@ -442,38 +424,34 @@ func (e *Engine) verdict(rs []round, now int64) Verdict {
 		}
 		prevT = r.t
 		v.Rounds++
-		if r.local >= 0 {
+		if r.Local >= 0 {
 			v.HasLocal = true
-			if r.local == 0 {
+			if r.Local == 0 {
 				v.LocalFail++
 			}
 		}
-		if r.remote >= 0 {
+		if r.Remote >= 0 {
 			v.HasRemote = true
-			if r.remote == 0 {
+			if r.Remote == 0 {
 				v.RemoteFail++
 			}
 		}
-		if r.inet >= 0 {
+		if r.Inet >= 0 {
 			v.HasInternet = true
-			if r.inet == 0 {
+			if r.Inet == 0 {
 				v.InternetFail++
 			}
 		}
-		if r.farSide(inetRemote) == 0 {
+		if r.FarSide(inetRemote) == 0 {
 			farFail++
 		}
-		fault := r.bridgeFault(inetRemote)
-		if r.inet == 0 && r.local != 0 {
-			switch {
-			case fault:
-				v.InetBridge++
-			// Behind the bridge, only blame the ISP when the remote site is provably reachable.
-			case !inetRemote || r.remote == 1:
-				v.Upstream++
-			}
+		if r.InetBridge(inetRemote) {
+			v.InetBridge++
 		}
-		if fault {
+		if r.Upstream(inetRemote) {
+			v.Upstream++
+		}
+		if r.BridgeFault(inetRemote) {
 			v.BridgeFault++
 			if run == 0 {
 				runStart = r.t
@@ -602,6 +580,13 @@ func (e *Engine) outagesSince(from, now int64, limit int) []Outage {
 			res = append(res, newOutage(ts.cfg, ts.runStart, now, ts.failRun, true))
 		}
 	}
+	if e.bRun >= e.cfg.OutageThreshold {
+		if now-e.bLast > e.gap {
+			res = append(res, bridgeOutage(e.bStart, e.bLast, e.bRun, false))
+		} else {
+			res = append(res, bridgeOutage(e.bStart, now, e.bRun, true))
+		}
+	}
 	for i := len(e.outages) - 1; i >= 0; i-- {
 		if limit > 0 && len(res) >= limit {
 			break
@@ -697,7 +682,7 @@ func (e *Engine) series(window time.Duration, buckets int) Series {
 				continue
 			}
 			cnt[b]++
-			if r.bridgeFault(inetRemote) {
+			if r.BridgeFault(inetRemote) {
 				fault[b]++
 			}
 		}

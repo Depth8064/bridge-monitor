@@ -1,72 +1,90 @@
 <!doctype html>
 <html lang="en">
+
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bridge Monitor</title>
-  <link rel="stylesheet" href="style.css">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bridge Monitor</title>
+    <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
-  <header>
-    <div class="brand">
-      <span id="live" class="live-dot" title="connection"></span>
-      <h1>Bridge Monitor</h1>
-      <span id="subtitle" class="muted"></span>
-    </div>
-    <nav id="windows" class="seg" aria-label="Time window">
-      <button data-w="300">5m</button>
-      <button data-w="900">15m</button>
-      <button data-w="3600">1h</button>
-      <button data-w="21600">6h</button>
-      <button data-w="86400">24h</button>
-      <button data-w="0">All</button>
-    </nav>
-  </header>
-
-  <main>
-    <section id="verdict" class="card"></section>
-
-    <section class="card">
-      <div class="card-head">
-        <h2>Latency</h2>
-        <label class="toggle"><input type="checkbox" id="logscale"> Log scale</label>
-      </div>
-      <div id="legend" class="legend"></div>
-      <canvas id="latency"></canvas>
-      <div class="hint muted">Solid = average, dashed = worst probe per bucket, red bands = packet loss.</div>
-    </section>
-
-    <section class="card">
-      <div class="card-head">
-        <h2>Availability timeline</h2>
-        <div class="scale muted">
-          <span class="cell c-none"></span>no data
-          <span class="cell c-ok"></span>0%
-          <span class="cell c-low"></span>some loss
-          <span class="cell c-high"></span>100% loss
+    <header>
+        <div class="brand">
+            <span id="live" class="live-dot" title="connection"></span>
+            <h1>Bridge Monitor</h1>
+            <span id="subtitle" class="muted"></span>
         </div>
-      </div>
-      <canvas id="timeline"></canvas>
-    </section>
+        <nav id="windows" class="seg" aria-label="Time window">
+            <button data-w="300">5m</button>
+            <button data-w="900">15m</button>
+            <button data-w="3600">1h</button>
+            <button data-w="21600">6h</button>
+            <button data-w="86400">24h</button>
+            <button data-w="604800">7d</button>
+            <button data-w="2592000">30d</button>
+            <button data-w="7776000">90d</button>
+            <button data-w="31536000">1y</button>
+            <button data-w="0">All</button>
+        </nav>
+    </header>
 
-    <div id="targets"></div>
+    <main>
+        <section id="verdict" class="card"></section>
 
-    <section class="card">
-      <div class="card-head">
-        <h2>Outages <span id="outage-count" class="muted"></span></h2>
-        <a id="csv" class="btn" href="api/outages.csv">Download CSV</a>
-      </div>
-      <table class="list">
-        <thead>
-          <tr><th>Target</th><th>Role</th><th>Start</th><th>End</th><th class="num">Duration</th><th class="num">Lost probes</th></tr>
-        </thead>
-        <tbody id="outages-body"></tbody>
-      </table>
-    </section>
-  </main>
+        <section class="card">
+            <div class="card-head">
+                <h2>Latency</h2>
+                <label class="toggle"><input type="checkbox" id="logscale"> Log scale</label>
+            </div>
+            <div id="legend" class="legend"></div>
+            <canvas id="latency"></canvas>
+            <div class="hint muted">Solid = average, dashed = worst probe per bucket, red bands = packet loss.</div>
+        </section>
 
-  <footer id="footer" class="muted"></footer>
-  <div id="tooltip" class="tooltip" hidden></div>
-  <script src="app.js"></script>
+        <section class="card">
+            <div class="card-head">
+                <h2>Availability timeline</h2>
+                <div class="scale muted">
+                    <span class="cell c-none"></span>no data
+                    <span class="cell c-ok"></span>0%
+                    <span class="cell c-low"></span>some loss
+                    <span class="cell c-high"></span>100% loss
+                </div>
+            </div>
+            <canvas id="timeline"></canvas>
+        </section>
+
+        <div id="targets"></div>
+
+        <section class="card">
+            <div class="card-head">
+                <h2>Outages <span id="outage-count" class="muted"></span></h2>
+                <div>
+                    <a id="csv" class="btn" href="api/outages.csv">Outages CSV</a>
+                    <a id="samples-csv" class="btn" href="api/samples.csv"
+                        title="Every raw probe still retained in this window">Raw samples CSV</a>
+                </div>
+            </div>
+            <table class="list">
+                <thead>
+                    <tr>
+                        <th>Target</th>
+                        <th>Role</th>
+                        <th>Start</th>
+                        <th>End</th>
+                        <th class="num">Duration</th>
+                        <th class="num">Lost probes</th>
+                    </tr>
+                </thead>
+                <tbody id="outages-body"></tbody>
+            </table>
+        </section>
+    </main>
+
+    <footer id="footer" class="muted"></footer>
+    <div id="tooltip" class="tooltip" hidden></div>
+    <script src="app.js"></script>
 </body>
+
 </html>

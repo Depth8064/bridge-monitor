@@ -10,14 +10,18 @@ import (
 	"github.com/Depth8064/bridge-monitor/internal/probe"
 )
 
+type Recorder interface {
+	WriteRound(t time.Time, samples []Sample) error
+}
+
 type Monitor struct {
 	cfg     *config.Config
 	eng     *Engine
-	store   *Store
+	store   Recorder
 	probers []probe.Prober
 }
 
-func New(cfg *config.Config, eng *Engine, store *Store) *Monitor {
+func New(cfg *config.Config, eng *Engine, store Recorder) *Monitor {
 	m := &Monitor{cfg: cfg, eng: eng, store: store}
 	for _, t := range cfg.Targets {
 		m.probers = append(m.probers, probe.New(t, cfg.Timeout.Duration, cfg.ICMPPrivileged))

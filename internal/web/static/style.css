@@ -587,6 +587,10 @@ table.list td.empty {
     border-color: #3a4763;
 }
 
+.btn+.btn {
+    margin-left: 6px;
+}
+
 footer {
     text-align: center;
     padding: 0 0 24px;
