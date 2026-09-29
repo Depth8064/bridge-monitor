@@ -1,0 +1,18 @@
+{
+  "listen": "127.0.0.1:8080",
+  "interval": "1s",
+  "timeout": "2s",
+  "outage_threshold": 3,
+  "spike_ms": 100,
+  "retention": "72h",
+  "data_dir": "data",
+  "icmp_privileged": false,
+  "targets": [
+    { "name": "Local radio", "role": "local", "type": "icmp", "host": "192.168.0.12" },
+    { "name": "Remote radio", "role": "remote", "type": "icmp", "host": "192.168.0.13" },
+    { "name": "Remote radio web UI", "role": "remote", "type": "tcp", "host": "192.168.0.13:80" },
+    { "name": "Cloudflare", "role": "internet", "type": "icmp", "host": "1.1.1.1" },
+    { "name": "Cloudflare HTTPS", "role": "internet", "type": "tcp", "host": "1.1.1.1:443" },
+    { "name": "Google DNS", "role": "internet", "type": "icmp", "host": "8.8.8.8" }
+  ]
+}

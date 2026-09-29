@@ -1,0 +1,6 @@
+/config.json
+/data/
+/dist/
+/bridge-monitor
+/bridge-monitor.exe
+*.exe
