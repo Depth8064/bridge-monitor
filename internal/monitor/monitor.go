@@ -90,11 +90,15 @@ func (m *Monitor) Run(ctx context.Context) {
 
 func (m *Monitor) probeAll(ctx context.Context) []Sample {
 	out := make([]Sample, len(m.probers))
+	// Spread probe starts a few ms apart so they don't contend for CPU and NIC at the same instant.
+	stagger := min(5*time.Millisecond, m.cfg.Interval.Duration/time.Duration(4*len(m.probers)))
+	start := time.Now()
 	var wg sync.WaitGroup
 	for i, p := range m.probers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			time.Sleep(time.Until(start.Add(time.Duration(i) * stagger)))
 			r := p.Probe(ctx)
 			out[i] = Sample{Target: m.cfg.Targets[i].Name, OK: r.OK, RTT: r.RTT, Err: r.Err}
 		}()
