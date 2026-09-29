@@ -31,7 +31,7 @@ docker compose up -d --build         # or pull ghcr.io/depth8064/bridge-monitor
 - Data lives in the `bridge-monitor-data` volume; `config.json` is mounted read-only.
 - Runs as non-root with unprivileged ICMP (default on Ubuntu). Set `TZ` for local-time logs.
 - In a VM, use a bridged/external virtual switch, not a NAT one, so probes see the real network.
-- CI builds `linux/amd64` and `linux/arm64` images to GHCR on every push to `main` and `v*` tags.
+- CI builds a `linux/amd64` image to GHCR on every push to `main` and `v*` tags.
   The repo is private, so run `docker login ghcr.io` with a PAT that has `read:packages` first.
 
 ## Config
