@@ -1,11 +1,6 @@
 'use strict';
 
 const PALETTE = ['#60a5fa', '#f472b6', '#34d399', '#fbbf24', '#a78bfa', '#22d3ee', '#fb923c', '#f87171', '#a3e635', '#e879f9'];
-const ROLES = [
-    ['local', 'Local site'],
-    ['remote', 'Remote site \u00b7 across the bridge'],
-    ['internet', 'Internet \u00b7 control'],
-];
 const PAD = { l: 64, r: 16, t: 12, b: 28 };
 const TL = { label: 170, row: 20, gap: 6 };
 const TIME_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 604800].map((s) => s * 1000);
@@ -145,20 +140,85 @@ function kpi(label, value, sub, cls) {
 
 const sev = (p) => (p >= 1 ? 'bad' : p > 0 ? 'warn' : 'good');
 
+// What each role means depends on which side of the bridge the internet uplink is on.
+function topology(d) {
+    const remote = d.internet_side === 'remote';
+    return {
+        remote,
+        roles: remote
+            ? [
+                ['local', 'This side \u00b7 local site (control)'],
+                ['remote', 'Far side \u00b7 across the bridge'],
+                ['internet', 'Far side \u00b7 internet via the bridge'],
+            ]
+            : [
+                ['local', 'This side \u00b7 local site (control)'],
+                ['internet', 'This side \u00b7 internet (control)'],
+                ['remote', 'Far side \u00b7 across the bridge'],
+            ],
+        roleLabel: {
+            local: 'local \u00b7 control',
+            remote: 'far side',
+            internet: remote ? 'internet \u00b7 via bridge' : 'internet \u00b7 control',
+        },
+        note: remote
+            ? 'The internet is reached through the bridge, so only the local site is a control. A bridge fault is ' +
+            'counted when the far side fails while the local site is healthy. Internet drops during a bridge fault are ' +
+            'blamed on the bridge; drops while the remote site is still reachable are counted as ISP-side.'
+            : 'The internet is on this side of the bridge, so it is a control alongside the local site. A bridge fault ' +
+            'is counted when the remote site fails while both controls are healthy; rounds where a control failed are ' +
+            'not blamed on the bridge.',
+    };
+}
+
+function roleStatus(d, role) {
+    const list = d.targets.filter((t) => t.role === role && t.has_data);
+    if (!list.length) return 'none';
+    const up = list.filter((t) => t.up).length;
+    return up === list.length ? 'up' : up === 0 ? 'down' : 'degraded';
+}
+
+function renderTopology(d, topo) {
+    const local = roleStatus(d, 'local');
+    const remote = roleStatus(d, 'remote');
+    const inet = roleStatus(d, 'internet');
+    const far = topo.remote && remote === 'none' ? inet : remote;
+    const bridge = far === 'none' || far === 'up' ? far : local === 'down' ? 'unknown' : far;
+
+    const node = (label, sub, st, extra) => {
+        const n = el('div', `topo-node ${st} ${extra || ''}`);
+        n.append(el('span', 'topo-dot'), el('div', 'topo-label', label), el('div', 'topo-sub', sub));
+        return n;
+    };
+    const link = (cls) => el('div', 'topo-link ' + (cls || ''));
+    const inetNode = node('Internet', topo.remote ? 'via the bridge' : 'control', inet);
+
+    const wrap = el('div', 'topo');
+    if (!topo.remote) wrap.append(inetNode, link());
+    wrap.append(
+        node('This host', 'monitor', 'up'), link(),
+        node('Local site', 'control', local), link('wireless'),
+        node('Bridge', 'under test', bridge, 'is-bridge'), link('wireless'),
+        node('Remote site', 'far side', remote),
+    );
+    if (topo.remote) wrap.append(link(), inetNode);
+    return wrap;
+}
+
 function renderVerdict() {
     const d = ui.data;
     const v = d.verdict;
+    const topo = topology(d);
     const root = $('verdict');
     root.replaceChildren();
 
     const head = el('div', 'card-head');
     head.append(el('h2', null, 'Bridge verdict'), el('span', 'muted', `${v.rounds.toLocaleString()} probe rounds over ${fmtDur(d.window_s)}`));
-    root.append(head);
+    root.append(head, renderTopology(d, topo), el('p', 'topo-note muted', topo.note));
 
     const grid = el('div', 'verdict-grid');
-    const inetRemote = d.internet_side === 'remote';
-    const inetControl = v.has_internet && !inetRemote;
-    const hasFar = v.has_remote || (inetRemote && v.has_internet);
+    const hasFar = v.has_remote || (topo.remote && v.has_internet);
+    const inetControl = v.has_internet && !topo.remote;
     if (hasFar) {
         const ctrl = inetControl ? 'local + internet OK' : 'local OK';
         grid.append(
@@ -168,19 +228,33 @@ function renderVerdict() {
             kpi('Bridge downtime', fmtDur(v.bridge_downtime), v.bridge_outages ? `one outage every ${fmtDur(v.bridge_mtbo)}` : 'no outages in window', v.bridge_downtime ? 'bad' : 'good'),
         );
     }
-    grid.append(
-        kpi('Local site loss (control)', v.has_local ? fmtPct(v.local_fail_pct) : 'n/a', `${v.local_fail.toLocaleString()} rounds`, v.has_local ? sev(v.local_fail_pct) : ''),
-        kpi(inetRemote ? 'Internet loss (via bridge)' : 'Internet loss (control)', v.has_internet ? fmtPct(v.internet_fail_pct) : 'n/a', `${v.internet_fail.toLocaleString()} rounds`, v.has_internet ? sev(v.internet_fail_pct) : ''),
-    );
+    grid.append(kpi('Local site loss (control)', v.has_local ? fmtPct(v.local_fail_pct) : 'n/a', `${v.local_fail.toLocaleString()} rounds`, v.has_local ? sev(v.local_fail_pct) : ''));
+    if (v.has_internet && topo.remote) {
+        grid.append(
+            kpi('Internet loss (via bridge)', fmtPct(v.internet_fail_pct), `${v.internet_fail.toLocaleString()} rounds unreachable`, sev(v.internet_fail_pct)),
+            kpi('Internet drops caused by bridge', v.internet_fail ? fmtPct(v.inet_bridge_pct, 1) : '\u2013',
+                `${v.inet_bridge.toLocaleString()} of ${v.internet_fail.toLocaleString()} rounds were during bridge faults`, v.inet_bridge ? 'bad' : 'good'),
+            kpi('ISP-side loss', v.has_remote ? fmtPct(v.upstream_pct) : 'n/a',
+                v.has_remote ? `${v.upstream.toLocaleString()} rounds: internet down, remote site up` : 'add remote targets to separate ISP from bridge',
+                v.has_remote ? sev(v.upstream_pct) : ''),
+        );
+    } else if (v.has_internet) {
+        grid.append(kpi('Internet loss (control)', fmtPct(v.internet_fail_pct), `${v.upstream.toLocaleString()} rounds ISP-side while local OK`, sev(v.internet_fail_pct)));
+    }
     root.append(grid);
 
     if (hasFar && v.rounds) {
         const ctrl = inetControl ? 'the local site and the internet were' : 'the local site was';
-        const text = v.bridge_fault === 0
+        let text = v.bridge_fault === 0
             ? `No bridge-attributable loss in the last ${fmtDur(d.window_s)}.`
             : `Over the last ${fmtDur(d.window_s)} the far side of the bridge failed to respond in ${v.bridge_fault.toLocaleString()} probe rounds ` +
             `(${fmtPct(v.bridge_fault_pct)}) while ${ctrl} healthy \u2014 ${v.bridge_outages} outage(s) totalling ${fmtDur(v.bridge_downtime)}, ` +
             `longest ${fmtDur(v.bridge_longest)}.`;
+        if (topo.remote && v.internet_fail) {
+            text += ` The internet was unreachable in ${v.internet_fail.toLocaleString()} rounds; ${v.inet_bridge.toLocaleString()} ` +
+                `(${fmtPct(v.inet_bridge_pct, 1)}) of those were caused by the bridge` +
+                (v.has_remote ? ` and ${v.upstream.toLocaleString()} were ISP-side.` : '.');
+        }
         root.append(el('p', 'summary', text));
     }
 }
@@ -575,9 +649,7 @@ function renderTargets() {
     const d = ui.data;
     const root = $('targets');
     root.replaceChildren();
-    const titles = new Map(ROLES);
-    if (d.internet_side === 'remote') titles.set('internet', 'Internet \u00b7 beyond the bridge');
-    for (const [role, title] of titles) {
+    for (const [role, title] of topology(d).roles) {
         const list = d.targets.filter((t) => t.role === role);
         if (!list.length) continue;
         const group = el('section', 'role-group');
@@ -603,6 +675,7 @@ function renderOutages() {
         tb.append(tr);
         return;
     }
+    const { roleLabel } = topology(ui.data);
     for (const o of list.slice(0, 100)) {
         const tr = el('tr');
         const name = el('td');
@@ -611,7 +684,7 @@ function renderOutages() {
         if (o.ongoing) end.append(el('span', 'pill down', 'ONGOING'));
         tr.append(
             name,
-            el('td', 'muted', o.role),
+            el('td', 'muted', roleLabel[o.role] || o.role),
             el('td', null, fmtDateTime(o.start)),
             end,
             el('td', 'num', fmtDur(o.duration_s)),

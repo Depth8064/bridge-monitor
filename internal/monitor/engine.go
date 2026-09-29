@@ -407,6 +407,10 @@ type Verdict struct {
 	BridgeAvg       float64 `json:"bridge_avg"`
 	BridgeLongest   float64 `json:"bridge_longest"`
 	BridgeMTBO      float64 `json:"bridge_mtbo"`
+	InetBridge      int     `json:"inet_bridge"`
+	InetBridgePct   float64 `json:"inet_bridge_pct"`
+	Upstream        int     `json:"upstream"`
+	UpstreamPct     float64 `json:"upstream_pct"`
 	Covered         float64 `json:"covered"`
 }
 
@@ -459,7 +463,17 @@ func (e *Engine) verdict(rs []round, now int64) Verdict {
 		if r.farSide(inetRemote) == 0 {
 			farFail++
 		}
-		if r.bridgeFault(inetRemote) {
+		fault := r.bridgeFault(inetRemote)
+		if r.inet == 0 && r.local != 0 {
+			switch {
+			case fault:
+				v.InetBridge++
+			// Behind the bridge, only blame the ISP when the remote site is provably reachable.
+			case !inetRemote || r.remote == 1:
+				v.Upstream++
+			}
+		}
+		if fault {
 			v.BridgeFault++
 			if run == 0 {
 				runStart = r.t
@@ -482,6 +496,8 @@ func (e *Engine) verdict(rs []round, now int64) Verdict {
 	v.BridgeFaultPct = pct(v.BridgeFault, v.Rounds)
 	v.AttributionPct = pct(v.BridgeFault, farFail)
 	v.FarFail = farFail
+	v.InetBridgePct = pct(v.InetBridge, v.InternetFail)
+	v.UpstreamPct = pct(v.Upstream, v.Rounds)
 	v.Covered = float64(covered) / 1e9
 	if v.BridgeOutages > 0 {
 		v.BridgeAvg = v.BridgeDowntime / float64(v.BridgeOutages)
