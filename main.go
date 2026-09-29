@@ -22,7 +22,14 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "config.json", "path to config file")
+	listen := flag.String("listen", "", "override listen from config")
+	dataDir := flag.String("data-dir", "", "override data_dir from config")
+	health := flag.String("healthcheck", "", "GET this URL and exit 0 on HTTP 200 (for container health checks)")
 	flag.Parse()
+
+	if *health != "" {
+		os.Exit(healthcheck(*health))
+	}
 
 	cfg, err := config.Load(*cfgPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -30,6 +37,12 @@ func main() {
 	}
 	if err != nil {
 		log.Fatalf("config: %v", err)
+	}
+	if *listen != "" {
+		cfg.Listen = *listen
+	}
+	if *dataDir != "" {
+		cfg.DataDir = *dataDir
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -87,6 +100,21 @@ func main() {
 	defer cancel()
 	srv.Shutdown(shutdownCtx)
 	bg.Wait()
+}
+
+func healthcheck(url string) int {
+	c := http.Client{Timeout: 3 * time.Second}
+	resp, err := c.Get(url)
+	if err != nil {
+		log.Print(err)
+		return 1
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("%s: %s", url, resp.Status)
+		return 1
+	}
+	return 0
 }
 
 func dashboardURL(listen string) string {

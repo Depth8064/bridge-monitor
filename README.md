@@ -1,7 +1,7 @@
 # bridge-monitor
 
 Continuously probes a point-to-point wireless bridge (local site, remote site) plus internet
-control targets, logs every probe to CSV, and serves a live dashboard with loss, latency,
+control targets, stores every probe in SQLite, and serves a live dashboard with loss, latency,
 outage and "bridge-attributable" statistics.
 
 ## Run
@@ -13,10 +13,26 @@ go build -o bridge-monitor .
 ```
 
 Open http://127.0.0.1:8080. Set `"listen": ":8080"` to view it from other machines.
+`-listen` and `-data-dir` override the config file.
 
 - **Windows:** ICMP uses `IcmpSendEcho`, so admin rights aren't needed.
 - **Linux:** uses unprivileged ICMP by default (`net.ipv4.ping_group_range`). If that is
   restricted, set `"icmp_privileged": true` and run as root or grant `CAP_NET_RAW`.
+
+## Docker (Linux host)
+
+```sh
+cp config.example.json config.json   # edit targets
+docker compose up -d --build         # or pull ghcr.io/depth8064/bridge-monitor
+```
+
+- Uses host networking so Docker's NAT doesn't add latency to probes. The dashboard listens on
+  `:8080` on every host interface.
+- Data lives in the `bridge-monitor-data` volume; `config.json` is mounted read-only.
+- Runs as non-root with unprivileged ICMP (default on Ubuntu). Set `TZ` for local-time logs.
+- In a VM, use a bridged/external virtual switch, not a NAT one, so probes see the real network.
+- CI builds `linux/amd64` and `linux/arm64` images to GHCR on every push to `main` and `v*` tags.
+  The repo is private, so run `docker login ghcr.io` with a PAT that has `read:packages` first.
 
 ## Config
 

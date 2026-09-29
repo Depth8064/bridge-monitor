@@ -25,6 +25,13 @@ func Handler(eng *monitor.Engine, hist *storage.History, db *storage.DB) http.Ha
 	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServerFS(sub))
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		if err := eng.Healthy(); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.Write([]byte("ok\n"))
+	})
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		win := window(r)
 		if !hist.Handles(win) {

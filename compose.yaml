@@ -1,0 +1,16 @@
+services:
+  bridge-monitor:
+    image: ghcr.io/depth8064/bridge-monitor:latest
+    build: .
+    container_name: bridge-monitor
+    restart: unless-stopped
+    # Host networking keeps Docker's NAT out of every probe's latency. Linux hosts only.
+    network_mode: host
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./config.json:/config/config.json:ro
+      - bridge-monitor-data:/data
+
+volumes:
+  bridge-monitor-data:

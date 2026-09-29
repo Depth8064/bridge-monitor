@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -165,6 +166,20 @@ func (e *Engine) Record(t time.Time, samples []Sample) {
 			cb(o)
 		}
 	}
+}
+
+// Healthy reports an error when probe rounds have stopped arriving.
+func (e *Engine) Healthy() error {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.rounds) == 0 {
+		return errors.New("no probe rounds recorded yet")
+	}
+	last := time.Unix(0, e.rounds[len(e.rounds)-1].t)
+	if age := time.Since(last); age > 3*e.cfg.Interval.Duration+e.cfg.Timeout.Duration {
+		return fmt.Errorf("last probe round was %s ago", age.Round(time.Second))
+	}
+	return nil
 }
 
 func (e *Engine) trackBridge(r round) (Outage, bool) {
