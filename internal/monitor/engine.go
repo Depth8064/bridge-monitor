@@ -118,7 +118,23 @@ func (r *round) apply(role string, ok bool) {
 	}
 }
 
-func (r round) bridgeFault() bool { return r.remote == 0 && r.local != 0 && r.inet != 0 }
+// farSide reports the health of the far side of the bridge: remote targets, or
+// internet targets when the uplink is across the bridge and no remote targets exist.
+func (r round) farSide(inetRemote bool) int8 {
+	if inetRemote && r.remote == -1 {
+		return r.inet
+	}
+	return r.remote
+}
+
+// bridgeFault: the far side failed while everything on this side of the bridge was healthy.
+// A local uplink is a control; a remote uplink sits behind the bridge so it can't be one.
+func (r round) bridgeFault(inetRemote bool) bool {
+	if r.farSide(inetRemote) != 0 || r.local == 0 {
+		return false
+	}
+	return inetRemote || r.inet != 0
+}
 
 const maxOutageLog = 10000
 
@@ -382,6 +398,7 @@ type Verdict struct {
 	LocalFailPct    float64 `json:"local_fail_pct"`
 	RemoteFailPct   float64 `json:"remote_fail_pct"`
 	InternetFailPct float64 `json:"internet_fail_pct"`
+	FarFail         int     `json:"far_fail"`
 	BridgeFault     int     `json:"bridge_fault"`
 	BridgeFaultPct  float64 `json:"bridge_fault_pct"`
 	AttributionPct  float64 `json:"attribution_pct"`
@@ -399,7 +416,8 @@ func (e *Engine) verdict(rs []round, now int64) Verdict {
 		return v
 	}
 	thr := e.cfg.OutageThreshold
-	run := 0
+	inetRemote := e.cfg.InternetIsRemote()
+	run, farFail := 0, 0
 	var runStart, prevT, covered int64
 	endRun := func(end int64) {
 		if run >= thr {
@@ -438,7 +456,10 @@ func (e *Engine) verdict(rs []round, now int64) Verdict {
 				v.InternetFail++
 			}
 		}
-		if r.bridgeFault() {
+		if r.farSide(inetRemote) == 0 {
+			farFail++
+		}
+		if r.bridgeFault(inetRemote) {
 			v.BridgeFault++
 			if run == 0 {
 				runStart = r.t
@@ -459,7 +480,8 @@ func (e *Engine) verdict(rs []round, now int64) Verdict {
 	v.RemoteFailPct = pct(v.RemoteFail, v.Rounds)
 	v.InternetFailPct = pct(v.InternetFail, v.Rounds)
 	v.BridgeFaultPct = pct(v.BridgeFault, v.Rounds)
-	v.AttributionPct = pct(v.BridgeFault, v.RemoteFail)
+	v.AttributionPct = pct(v.BridgeFault, farFail)
+	v.FarFail = farFail
 	v.Covered = float64(covered) / 1e9
 	if v.BridgeOutages > 0 {
 		v.BridgeAvg = v.BridgeDowntime / float64(v.BridgeOutages)
@@ -495,6 +517,7 @@ type State struct {
 	TimeoutS  float64       `json:"timeout_s"`
 	Threshold int           `json:"outage_threshold"`
 	SpikeMs   float64       `json:"spike_ms"`
+	InetSide  string        `json:"internet_side"`
 	Targets   []TargetState `json:"targets"`
 	Verdict   Verdict       `json:"verdict"`
 	Outages   []Outage      `json:"outages"`
@@ -513,7 +536,7 @@ func (e *Engine) state(window time.Duration) State {
 		Now: time.Unix(0, now), Started: e.started,
 		WindowS:   float64(now-from) / 1e9,
 		IntervalS: e.cfg.Interval.Seconds(), TimeoutS: e.cfg.Timeout.Seconds(),
-		Threshold: e.cfg.OutageThreshold, SpikeMs: e.cfg.SpikeMs,
+		Threshold: e.cfg.OutageThreshold, SpikeMs: e.cfg.SpikeMs, InetSide: e.cfg.InternetSide,
 	}
 	earliest := int64(math.MaxInt64)
 	for _, ts := range e.targets {
@@ -615,9 +638,10 @@ func (e *Engine) series(window time.Duration, buckets int) Series {
 	n := int((now - start + step - 1) / step)
 	out := Series{Start: start / ms, Step: step / ms, Buckets: n}
 
-	hasRemote := false
+	hasRemote, hasInet := false, false
 	for _, ts := range e.targets {
 		hasRemote = hasRemote || ts.cfg.Role == config.RoleRemote
+		hasInet = hasInet || ts.cfg.Role == config.RoleInternet
 		cnt, lost := make([]int, n), make([]int, n)
 		sum, mx := make([]float64, n), make([]float64, n)
 		for _, p := range ts.pts[idxPts(ts.pts, start):] {
@@ -648,7 +672,8 @@ func (e *Engine) series(window time.Duration, buckets int) Series {
 		out.Targets = append(out.Targets, st)
 	}
 
-	if hasRemote {
+	inetRemote := e.cfg.InternetIsRemote()
+	if hasRemote || (inetRemote && hasInet) {
 		cnt, fault := make([]int, n), make([]int, n)
 		for _, r := range e.rounds[idxRounds(e.rounds, start):] {
 			b := int((r.t - start) / step)
@@ -656,7 +681,7 @@ func (e *Engine) series(window time.Duration, buckets int) Series {
 				continue
 			}
 			cnt[b]++
-			if r.bridgeFault() {
+			if r.bridgeFault(inetRemote) {
 				fault[b]++
 			}
 		}

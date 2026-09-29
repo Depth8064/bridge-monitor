@@ -55,7 +55,9 @@ type Config struct {
 	Retention       Duration `json:"retention"`
 	DataDir         string   `json:"data_dir"`
 	ICMPPrivileged  bool     `json:"icmp_privileged"`
-	Targets         []Target `json:"targets"`
+	// InternetSide is which side of the bridge the internet uplink is on, relative to this host.
+	InternetSide string   `json:"internet_side"`
+	Targets      []Target `json:"targets"`
 }
 
 func Default() *Config {
@@ -67,8 +69,11 @@ func Default() *Config {
 		SpikeMs:         100,
 		Retention:       Duration{24 * time.Hour},
 		DataDir:         "data",
+		InternetSide:    RoleLocal,
 	}
 }
+
+func (c *Config) InternetIsRemote() bool { return c.InternetSide == RoleRemote }
 
 func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
@@ -99,6 +104,9 @@ func (c *Config) validate() error {
 	}
 	if c.Retention.Duration < time.Minute {
 		errs = append(errs, errors.New("retention must be >= 1m"))
+	}
+	if c.InternetSide != RoleLocal && c.InternetSide != RoleRemote {
+		errs = append(errs, errors.New("internet_side must be local or remote"))
 	}
 	if len(c.Targets) == 0 {
 		errs = append(errs, errors.New("at least one target is required"))

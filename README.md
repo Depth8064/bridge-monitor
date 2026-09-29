@@ -26,14 +26,23 @@ Open http://127.0.0.1:8080. Set `"listen": ":8080"` to view it from other machin
 | `outage_threshold` | Consecutive lost probes that count as an outage |
 | `spike_ms` | Replies slower than this are counted as latency spikes |
 | `retention` | How much history is kept in memory / reloaded on restart |
+| `internet_side` | `local` (default) if this host reaches the internet without crossing the bridge, `remote` if the uplink is on the far side |
 | `targets[].role` | `local`, `remote` (across the bridge) or `internet` (control) |
 | `targets[].type` | `icmp` (`host`) or `tcp` (`host:port`) |
 
 ## Bridge verdict
 
-Every round probes all targets at the same time. A round is a **bridge fault** when a
-`remote` target fails while every `local` and `internet` target succeeds. This means the
-monitoring host, the LAN and the uplink were all working when the remote site dropped.
+Every round probes all targets at the same time. A round is a **bridge fault** when the far
+side fails while this side is healthy:
+
+- `internet_side: local`: a `remote` target fails while every `local` and `internet` target
+  succeeds. The internet acts as a control that proves this host and its uplink were working.
+- `internet_side: remote`: a `remote` target fails while every `local` target succeeds. The
+  internet is behind the bridge, so it isn't used as a control. Internet loss while the remote
+  targets are up points at the ISP, not the bridge. If there are no `remote` targets, internet
+  failures count as the far side.
+
+To run it on both sides, give each instance its own config and flip `internet_side`.
 
 ## Data
 
