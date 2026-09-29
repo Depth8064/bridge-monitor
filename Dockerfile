@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Cross-compile natively on the build machine; the binary is pure Go (no CGO), so no emulation is needed.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 ARG TARGETOS TARGETARCH TARGETVARIANT
 WORKDIR /src
 COPY go.mod go.sum ./
