@@ -36,6 +36,7 @@ function swatch(color) {
 
 function fmtMs(v) {
     if (v == null || !isFinite(v)) return '\u2013';
+    if (v < 1) return v.toFixed(3) + ' ms';
     if (v < 10) return v.toFixed(2) + ' ms';
     if (v < 100) return v.toFixed(1) + ' ms';
     return Math.round(v).toLocaleString() + ' ms';

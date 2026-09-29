@@ -6,8 +6,8 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"runtime"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -15,10 +15,11 @@ import (
 
 // Windows ICMP via iphlpapi so no admin rights / raw sockets are required.
 var (
-	iphlpapi            = windows.NewLazySystemDLL("iphlpapi.dll")
-	procIcmpCreateFile  = iphlpapi.NewProc("IcmpCreateFile")
-	procIcmpCloseHandle = iphlpapi.NewProc("IcmpCloseHandle")
-	procIcmpSendEcho    = iphlpapi.NewProc("IcmpSendEcho")
+	iphlpapi             = windows.NewLazySystemDLL("iphlpapi.dll")
+	procIcmpCreateFile   = iphlpapi.NewProc("IcmpCreateFile")
+	procIcmpCloseHandle  = iphlpapi.NewProc("IcmpCloseHandle")
+	procIcmpSendEcho2    = iphlpapi.NewProc("IcmpSendEcho2")
+	procIcmpParseReplies = iphlpapi.NewProc("IcmpParseReplies")
 )
 
 var payload = []byte("bridge-monitor-probe-payload-32b")
@@ -31,17 +32,29 @@ func (p *icmpProber) Probe(ctx context.Context) Result {
 		return Result{Err: shortErr(err)}
 	}
 
+	// Deferred first so the buffer outlives IcmpCloseHandle, which cancels any pending write into it.
+	reply := make([]byte, 256+len(payload))
+	defer runtime.KeepAlive(reply)
+
 	h, _, callErr := procIcmpCreateFile.Call()
 	if windows.Handle(h) == windows.InvalidHandle {
 		return Result{Err: "IcmpCreateFile: " + callErr.Error()}
 	}
 	defer procIcmpCloseHandle.Call(h)
 
-	reply := make([]byte, 256+len(payload))
+	// Synchronous IcmpSendEcho only returns on scheduler ticks (~15.6ms); an event wakes immediately.
+	ev, err := windows.CreateEvent(nil, 0, 0, nil)
+	if err != nil {
+		return Result{Err: "CreateEvent: " + err.Error()}
+	}
+	defer windows.CloseHandle(ev)
+
 	timeoutMs := max(uint32(p.timeout.Milliseconds()), 1)
-	start := time.Now()
-	n, _, callErr := procIcmpSendEcho.Call(
+	start := clockNow()
+	n, _, callErr := procIcmpSendEcho2.Call(
 		h,
+		uintptr(ev),
+		0, 0,
 		uintptr(binary.LittleEndian.Uint32(ip)),
 		uintptr(unsafe.Pointer(&payload[0])),
 		uintptr(len(payload)),
@@ -50,18 +63,31 @@ func (p *icmpProber) Probe(ctx context.Context) Result {
 		uintptr(len(reply)),
 		uintptr(timeoutMs),
 	)
-	rtt := time.Since(start)
+	if n == 0 && callErr != windows.ERROR_IO_PENDING {
+		return Result{Err: icmpErr(callErr)}
+	}
 	if n == 0 {
-		if en, ok := callErr.(syscall.Errno); ok {
-			return Result{Err: icmpStatus(uint32(en))}
+		if w, _ := windows.WaitForSingleObject(ev, timeoutMs+1000); w != windows.WAIT_OBJECT_0 {
+			return Result{Err: "timeout"}
 		}
-		return Result{Err: callErr.Error()}
+	}
+	rtt := clockSince(start)
+	n, _, callErr = procIcmpParseReplies.Call(uintptr(unsafe.Pointer(&reply[0])), uintptr(len(reply)))
+	if n == 0 {
+		return Result{Err: icmpErr(callErr)}
 	}
 	// ICMP_ECHO_REPLY: Address uint32, Status uint32, ...
 	if status := binary.LittleEndian.Uint32(reply[4:8]); status != 0 {
 		return Result{Err: icmpStatus(status)}
 	}
 	return Result{OK: true, RTT: rtt}
+}
+
+func icmpErr(err error) string {
+	if en, ok := err.(syscall.Errno); ok {
+		return icmpStatus(uint32(en))
+	}
+	return err.Error()
 }
 
 func icmpStatus(code uint32) string {

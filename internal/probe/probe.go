@@ -36,9 +36,9 @@ func (p *tcpProber) Probe(ctx context.Context) Result {
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 	var d net.Dialer
-	start := time.Now()
+	start := clockNow()
 	c, err := d.DialContext(ctx, "tcp", p.addr)
-	rtt := time.Since(start)
+	rtt := clockSince(start)
 	if err != nil {
 		return Result{Err: shortErr(err)}
 	}
