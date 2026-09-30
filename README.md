@@ -1,12 +1,13 @@
-# bridge-monitor
+<div align="center">
+  <img src="docs/images/banner.png" alt="Bridge Monitor" width="900">
+  
+</div>
+
+## Bridge Monitor
 
 Continuously probes a point-to-point wireless bridge (local site, remote site) plus internet
 control targets, stores every probe in SQLite, and serves a live dashboard with loss, latency,
 outage and "bridge-attributable" statistics.
-
-<p align="center">
-  <img src="docs/images/banner.png" alt="Bridge Monitor" width="900">
-</p>
 
 ## Run
 
