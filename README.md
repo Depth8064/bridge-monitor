@@ -4,6 +4,10 @@ Continuously probes a point-to-point wireless bridge (local site, remote site) p
 control targets, stores every probe in SQLite, and serves a live dashboard with loss, latency,
 outage and "bridge-attributable" statistics.
 
+<p align="center">
+  <img src="docs/images/banner.png" alt="Bridge Monitor" width="900">
+</p>
+
 ## Run
 
 ```sh
@@ -14,6 +18,13 @@ go build -o bridge-monitor .
 
 Open http://127.0.0.1:8080. Set `"listen": ":8080"` to view it from other machines.
 `-listen` and `-data-dir` override the config file.
+
+<details>
+  <summary>View dashboard screenshot</summary>
+  <p align="center">
+    <img src="docs/images/bridge-monitor-dashboard.png" alt="Bridge Monitor dashboard" width="900">
+  </p>
+</details>
 
 - **Windows:** ICMP uses `IcmpSendEcho`, so admin rights aren't needed.
 - **Linux:** uses unprivileged ICMP by default (`net.ipv4.ping_group_range`). If that is
