@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/prometheus-community/pro-bing v0.9.1
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.60.1
 )
 
