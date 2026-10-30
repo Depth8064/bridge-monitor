@@ -322,6 +322,47 @@ func queryTier(ctx context.Context, q querier, t tier, from, to int64, fn func(b
 	return rows.Err()
 }
 
+// queryTierLean is queryTier with only the fields charts need (sent, lost, rtt sum/max, rounds,
+// bridge faults); skipping the histogram decode makes it several times faster. The *Agg and
+// *VAgg passed to fn/vfn are reused between rows, so callbacks must not retain them.
+func queryTierLean(ctx context.Context, q querier, t tier, from, to int64, fn func(bucket, tid int64, a *Agg), vfn func(bucket int64, v *VAgg)) error {
+	rows, err := q.QueryContext(ctx, fmt.Sprintf(`
+		SELECT bucket, target_id, sent, lost, rtt_sum, rtt_max
+		FROM agg_%s WHERE bucket >= ? AND bucket < ?`, t.name), from, to)
+	if err != nil {
+		return err
+	}
+	var a Agg
+	for rows.Next() {
+		var bucket, tid int64
+		if err := rows.Scan(&bucket, &tid, &a.Sent, &a.Lost, &a.Sum, &a.Max); err != nil {
+			rows.Close()
+			return err
+		}
+		fn(bucket, tid, &a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	rows, err = q.QueryContext(ctx, fmt.Sprintf(`
+		SELECT bucket, rounds, bridge_fault FROM verdict_%s WHERE bucket >= ? AND bucket < ?`, t.name), from, to)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var v VAgg
+	for rows.Next() {
+		var bucket int64
+		if err := rows.Scan(&bucket, &v.Rounds, &v.BridgeFault); err != nil {
+			return err
+		}
+		vfn(bucket, &v)
+	}
+	return rows.Err()
+}
+
 func writeAggs(ctx context.Context, q querier, tierName string, aggs map[aggKey]*Agg) error {
 	stmt := fmt.Sprintf(`INSERT OR REPLACE INTO agg_%s
 		(bucket, target_id, sent, lost, rtt_sum, rtt_min, rtt_max, jit_sum, jit_n, spikes, bursts, max_burst, hist)

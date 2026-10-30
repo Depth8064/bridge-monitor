@@ -196,3 +196,47 @@ func TestHistoryStitchesTiers(t *testing.T) {
 		t.Fatalf("L rtt min/p50/max = %.3f/%.3f/%.3f", st.RTTMin, st.RTTP50, st.RTTMax)
 	}
 }
+
+func TestHistoryCoverUnalignedWindow(t *testing.T) {
+	cfg := testConfig()
+	cfg.Storage.Minute = config.Duration{}
+	cfg.Storage.Hour = config.Duration{}
+	db := openTest(t, cfg)
+	dur := 2*time.Hour + 10*time.Minute
+	seed(t, db, dur)
+	if err := NewDownsampler(db, cfg).Rollup(context.Background(), t0.Add(2*time.Hour+5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHistory(db, monitor.NewEngine(cfg), cfg)
+	ctx := context.Background()
+	wms, err := h.watermarks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromS, toS := 37*60, int(dur.Seconds())
+	rID, _ := db.targetID("R")
+	var sent, lost, rounds, faults int64
+	err = h.cover(ctx, t0.Add(time.Duration(fromS)*time.Second).UnixMilli(), t0.Add(dur).UnixMilli(), len(tiers)-1, wms,
+		func(_, tid int64, a *Agg) {
+			if tid == rID {
+				sent += a.Sent
+				lost += a.Lost
+			}
+		},
+		func(_ int64, v *VAgg) { rounds += v.Rounds; faults += v.BridgeFault })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wantLost int64
+	for s := fromS; s < toS; s++ {
+		if (s >= 3600 && s < 3610) || s%100 == 50 {
+			wantLost++
+		}
+	}
+	if want := int64(toS - fromS); sent != want || rounds != want {
+		t.Fatalf("cover R sent=%d rounds=%d, want %d", sent, rounds, want)
+	}
+	if lost != wantLost || faults != wantLost {
+		t.Fatalf("cover R lost=%d faults=%d, want %d", lost, faults, wantLost)
+	}
+}

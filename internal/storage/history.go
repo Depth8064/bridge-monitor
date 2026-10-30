@@ -126,42 +126,109 @@ func (h *History) span(ctx context.Context, window time.Duration) (span, error) 
 
 // pickTier returns the finest tier that still holds the whole window at a sane row count.
 func (h *History) pickTier(spanMs int64) int {
-	st := h.cfg.Storage
-	rets := []time.Duration{st.Minute.Duration, st.Hour.Duration, st.Day.Duration}
 	for i, t := range tiers {
-		if (rets[i] == 0 || rets[i].Milliseconds() >= spanMs) && spanMs/t.size <= 20000 {
+		if h.retains(i, spanMs) && spanMs/t.size <= 20000 {
 			return i
 		}
 	}
 	return len(tiers) - 1
 }
 
-// collect visits every aggregate in [from, to): tier k where rolled up, finer tiers after its
-// watermark, and raw samples after the finest watermark.
-func (h *History) collect(ctx context.Context, from, to int64, k int, fn func(bucket, tid int64, a *Agg), vfn func(bucket int64, v *VAgg)) error {
+// retains reports whether tier i keeps data at least spanMs old.
+func (h *History) retains(i int, spanMs int64) bool {
+	st := h.cfg.Storage
+	ret := []time.Duration{st.Minute.Duration, st.Hour.Duration, st.Day.Duration}[i]
+	return ret == 0 || ret.Milliseconds() >= spanMs
+}
+
+// coverTier returns the coarsest tier that still holds the whole window; totals don't need
+// fine buckets.
+func (h *History) coverTier(spanMs int64) int {
+	for i := len(tiers) - 1; i > 0; i-- {
+		if h.retains(i, spanMs) {
+			return i
+		}
+	}
+	return 0
+}
+
+type aggFn func(bucket, tid int64, a *Agg)
+type vaggFn func(bucket int64, v *VAgg)
+
+func (h *History) watermarks(ctx context.Context) ([]int64, error) {
 	wms := make([]int64, len(tiers))
 	for i, t := range tiers {
 		wm, err := h.db.watermark(ctx, h.db.db, t.name)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		wms[i] = wm
+	}
+	return wms, nil
+}
+
+// collect visits every aggregate in [from, to) at tier-k resolution or finer: tier k where rolled
+// up, finer tiers after its watermark, and raw samples after the finest watermark. lean skips the
+// columns only needed for whole-window stats (histograms, jitter, bursts).
+func (h *History) collect(ctx context.Context, from, to int64, k int, lean bool, fn aggFn, vfn vaggFn) error {
+	wms, err := h.watermarks(ctx)
+	if err != nil {
+		return err
 	}
 	lo := floorTo(from, tiers[k].size)
 	for j := k; j >= 0; j-- {
 		if hi := min(wms[j], to); hi > lo {
-			if err := queryTier(ctx, h.db.db, tiers[j], lo, hi, fn, vfn); err != nil {
+			if err := h.queryTier(ctx, j, lo, hi, lean, fn, vfn); err != nil {
 				return err
 			}
 		}
 		lo = max(lo, wms[j])
 	}
-	if lo >= to {
+	return h.rawTail(ctx, lo, to, fn, vfn)
+}
+
+// cover visits aggregates totalling [from, to) using whole tier-k buckets for the interior and
+// finer tiers for the partial edges, so window totals need only a few hundred rows. A leading
+// edge whose finer data has been pruned (or that is finer than a minute) rounds out to the
+// enclosing bucket.
+func (h *History) cover(ctx context.Context, from, to int64, k int, wms []int64, fn aggFn, vfn vaggFn) error {
+	if from >= to {
+		return nil
+	}
+	size := tiers[k].size
+	a := floorTo(from, size)
+	if k > 0 && a < from && h.retains(k-1, time.Now().UnixMilli()-from) {
+		a = min(a+size, to)
+		if err := h.cover(ctx, from, a, k-1, wms, fn, vfn); err != nil {
+			return err
+		}
+	}
+	b := max(a, min(floorTo(to, size), wms[k]))
+	if b > a {
+		if err := h.queryTier(ctx, k, a, b, false, fn, vfn); err != nil {
+			return err
+		}
+	}
+	if k == 0 {
+		return h.rawTail(ctx, b, to, fn, vfn)
+	}
+	return h.cover(ctx, b, to, k-1, wms, fn, vfn)
+}
+
+func (h *History) queryTier(ctx context.Context, k int, from, to int64, lean bool, fn aggFn, vfn vaggFn) error {
+	if lean {
+		return queryTierLean(ctx, h.db.db, tiers[k], from, to, fn, vfn)
+	}
+	return queryTier(ctx, h.db.db, tiers[k], from, to, fn, vfn)
+}
+
+func (h *History) rawTail(ctx context.Context, from, to int64, fn aggFn, vfn vaggFn) error {
+	if from >= to {
 		return nil
 	}
 	gap := max(10*h.cfg.Interval.Duration, 30*time.Second).Milliseconds()
 	acc := newRawAcc(tiers[0].size, gap, h.cfg.SpikeMs, h.cfg.InternetIsRemote(), h.db.roleMap(), nil)
-	if err := scanRaw(ctx, h.db.db, lo, to, acc); err != nil {
+	if err := scanRaw(ctx, h.db.db, from, to, acc); err != nil {
 		return err
 	}
 	for k, a := range acc.aggs {
@@ -235,7 +302,11 @@ func (h *History) buildState(ctx context.Context, window time.Duration) (*stateD
 	}
 	names := h.names()
 	sd := &stateData{sp: sp, aggs: map[string]*Agg{}}
-	err = h.collect(ctx, sp.from, sp.to, sp.tier,
+	wms, err := h.watermarks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = h.cover(ctx, sp.from, sp.to, h.coverTier(sp.to-sp.from), wms,
 		func(_, tid int64, a *Agg) {
 			name := names[tid]
 			if cur := sd.aggs[name]; cur != nil {
@@ -375,7 +446,7 @@ func (h *History) buildSeries(ctx context.Context, window time.Duration, buckets
 	}
 	rounds, faults := make([]int64, n), make([]int64, n)
 
-	err = h.collect(ctx, sp.from, sp.to, sp.tier,
+	err = h.collect(ctx, sp.from, sp.to, sp.tier, true,
 		func(bucket, tid int64, a *Agg) {
 			i, ok := idx[names[tid]]
 			b := int((bucket - start) / step)
