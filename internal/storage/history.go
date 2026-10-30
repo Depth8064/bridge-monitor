@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"slices"
 	"sync"
@@ -22,16 +23,20 @@ type History struct {
 	ttl time.Duration
 
 	mu    sync.Mutex
-	cache map[string]memo
+	cache map[string]*memo
 }
 
 type memo struct {
-	at time.Time
-	v  any
+	ready chan struct{} // closed once the first build finishes
+	at    time.Time     // when v was built
+	used  time.Time
+	busy  bool
+	v     any
+	err   error
 }
 
 func NewHistory(db *DB, eng *monitor.Engine, cfg *config.Config) *History {
-	return &History{db: db, eng: eng, cfg: cfg, ttl: 15 * time.Second, cache: map[string]memo{}}
+	return &History{db: db, eng: eng, cfg: cfg, ttl: 15 * time.Second, cache: map[string]*memo{}}
 }
 
 // Handles reports whether window (0 = everything) is beyond the engine's in-memory range.
@@ -39,23 +44,62 @@ func (h *History) Handles(window time.Duration) bool {
 	return window <= 0 || window > h.cfg.Retention.Duration
 }
 
-func (h *History) memoize(key string, build func() (any, error)) (any, error) {
+// memoize caches build per key. Keys build independently, and once a value exists it is served
+// immediately while an expired entry is refreshed in the background, so polling never stalls.
+func (h *History) memoize(ctx context.Context, key string, build func(context.Context) (any, error)) (any, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if m, ok := h.cache[key]; ok && time.Since(m.at) < h.ttl {
-		return m.v, nil
-	}
-	v, err := build()
-	if err != nil {
-		return nil, err
-	}
+	now := time.Now()
 	for k, m := range h.cache {
-		if time.Since(m.at) >= h.ttl {
+		if !m.busy && now.Sub(m.used) > 4*h.ttl {
 			delete(h.cache, k)
 		}
 	}
-	h.cache[key] = memo{time.Now(), v}
-	return v, nil
+	m := h.cache[key]
+	if m == nil {
+		m = &memo{ready: make(chan struct{}), busy: true}
+		h.cache[key] = m
+		go h.rebuild(key, m, build)
+	} else if !m.busy && now.Sub(m.at) >= h.ttl {
+		m.busy = true
+		go h.rebuild(key, m, build)
+	}
+	m.used = now
+	h.mu.Unlock()
+
+	select {
+	case <-m.ready:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return m.v, m.err
+}
+
+func (h *History) rebuild(key string, m *memo, build func(context.Context) (any, error)) {
+	// Not tied to any one request: other callers may be waiting on the same build.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	v, err := build(ctx)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	first := m.v == nil
+	m.busy, m.at = false, time.Now()
+	switch {
+	case err == nil:
+		m.v, m.err = v, nil
+	case first:
+		m.err = err
+		delete(h.cache, key) // let the next request retry
+	default:
+		log.Printf("history refresh %s: %v", key, err) // keep serving the previous value
+	}
+	select {
+	case <-m.ready:
+	default:
+		close(m.ready)
+	}
 }
 
 type span struct {
@@ -149,8 +193,10 @@ type stateData struct {
 }
 
 func (h *History) State(ctx context.Context, window time.Duration) (monitor.State, error) {
-	st := h.eng.State(window)
-	d, err := h.memoize(fmt.Sprintf("state:%d", window), func() (any, error) { return h.buildState(ctx, window) })
+	// Only live fields and ongoing outages are kept from the engine; everything window-dependent
+	// is replaced below, so don't make it crunch its whole in-memory range on every poll.
+	st := h.eng.State(time.Second)
+	d, err := h.memoize(ctx, fmt.Sprintf("state:%d", window), func(ctx context.Context) (any, error) { return h.buildState(ctx, window) })
 	if err != nil {
 		return st, err
 	}
@@ -289,7 +335,7 @@ func (h *History) verdict(v *VAgg, bridgeOuts []model.Outage, from int64) monito
 // ---- series ----
 
 func (h *History) Series(ctx context.Context, window time.Duration, buckets int) (monitor.Series, error) {
-	v, err := h.memoize(fmt.Sprintf("series:%d:%d", window, buckets), func() (any, error) {
+	v, err := h.memoize(ctx, fmt.Sprintf("series:%d:%d", window, buckets), func(ctx context.Context) (any, error) {
 		return h.buildSeries(ctx, window, buckets)
 	})
 	if err != nil {
