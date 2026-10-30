@@ -86,8 +86,24 @@ async function getJSON(url) {
 }
 
 function bucketCount() {
+    // Uses the widest possible gutter so the count (and so the server cache key) stays stable.
     const w = $('latency').clientWidth || 900;
-    return Math.max(60, Math.min(1500, Math.floor((w - PAD.l - PAD.r) / 3)));
+    return Math.max(60, Math.min(1500, Math.floor((w - TL.label - PAD.r) / 3)));
+}
+
+// Left inset shared by both charts so their time axes line up: wide enough for the timeline's
+// row labels, never narrower than the latency chart's y-axis labels.
+let gutterCache = { key: '', w: PAD.l };
+function gutter() {
+    const names = timelineRows().map((r) => r.name);
+    const key = names.join('\n');
+    if (key !== gutterCache.key) {
+        const ctx = $('timeline').getContext('2d');
+        ctx.font = FONT;
+        const widest = Math.max(0, ...names.map((n) => ctx.measureText(n).width));
+        gutterCache = { key, w: Math.max(PAD.l, Math.min(TL.label, Math.ceil(widest) + 32)) };
+    }
+    return gutterCache.w;
 }
 
 async function refresh() {
@@ -371,7 +387,8 @@ function drawLatency() {
     const se = ui.series;
     if (!se || !se.buckets) return;
 
-    const pw = w - PAD.l - PAD.r;
+    const x0 = gutter();
+    const pw = w - x0 - PAD.r;
     const ph = h - PAD.t - PAD.b;
     const bw = pw / se.buckets;
     const vis = se.targets.filter((t) => !ui.hidden.has(t.name));
@@ -399,7 +416,7 @@ function drawLatency() {
         Y = (v) => PAD.t + ph * (1 - v / y1);
         ticks = linTicks(y1, 5);
     }
-    const X = (i) => PAD.l + (i + 0.5) * bw;
+    const X = (i) => x0 + (i + 0.5) * bw;
 
     // loss bands behind everything
     for (let i = 0; i < se.buckets; i++) {
@@ -407,7 +424,7 @@ function drawLatency() {
         for (const t of vis) if (t.loss[i] > l) l = t.loss[i];
         if (l > 0) {
             ctx.fillStyle = `rgba(239,68,68,${0.12 + 0.38 * Math.min(1, l / 100)})`;
-            ctx.fillRect(PAD.l + i * bw, PAD.t, Math.max(bw, 1.5), ph);
+            ctx.fillRect(x0 + i * bw, PAD.t, Math.max(bw, 1.5), ph);
         }
     }
 
@@ -417,13 +434,13 @@ function drawLatency() {
         const y = Math.round(Y(v)) + 0.5;
         ctx.strokeStyle = 'rgba(148,163,184,0.10)';
         ctx.beginPath();
-        ctx.moveTo(PAD.l, y);
+        ctx.moveTo(x0, y);
         ctx.lineTo(w - PAD.r, y);
         ctx.stroke();
         ctx.fillStyle = '#8b95a7';
-        ctx.fillText(fmtAxisMs(v), PAD.l - 8, y);
+        ctx.fillText(fmtAxisMs(v), x0 - 8, y);
     }
-    drawTimeAxis(ctx, se, PAD.l, pw, PAD.t, h - PAD.b);
+    drawTimeAxis(ctx, se, x0, pw, PAD.t, h - PAD.b);
 
     const path = (arr) => {
         ctx.beginPath();
@@ -458,7 +475,7 @@ function drawLatency() {
         path(t.avg);
     }
 
-    drawHover(ctx, se, PAD.l, pw, PAD.t, h - PAD.b);
+    drawHover(ctx, se, x0, pw, PAD.t, h - PAD.b);
     if (ui.hover >= 0 && ui.hover < se.buckets) {
         for (const t of vis) {
             const v = t.avg[ui.hover];
@@ -497,7 +514,7 @@ function drawTimeline() {
     const { ctx, w } = setupCanvas(cv, h);
     if (!se || !se.buckets) return;
 
-    const x0 = TL.label;
+    const x0 = gutter();
     const pw = w - x0 - PAD.r;
     const bw = pw / se.buckets;
     rows.forEach((r, k) => {
@@ -532,12 +549,12 @@ function drawTimeline() {
 
 // ---------- hover / tooltip ----------
 
-function bindHover(cv, x0Of) {
+function bindHover(cv) {
     cv.addEventListener('mousemove', (ev) => {
         const se = ui.series;
         if (!se) return;
         const rect = cv.getBoundingClientRect();
-        const x0 = x0Of();
+        const x0 = gutter();
         const pw = rect.width - x0 - PAD.r;
         const i = Math.floor(((ev.clientX - rect.left - x0) / pw) * se.buckets);
         ui.hover = i >= 0 && i < se.buckets ? i : -1;
@@ -718,8 +735,8 @@ function init() {
         localStorage.setItem('bm.log', ui.log ? '1' : '0');
         drawLatency();
     });
-    bindHover($('latency'), () => PAD.l);
-    bindHover($('timeline'), () => TL.label);
+    bindHover($('latency'));
+    bindHover($('timeline'));
     new ResizeObserver(() => { drawLatency(); drawTimeline(); }).observe($('latency'));
     refresh();
 }
